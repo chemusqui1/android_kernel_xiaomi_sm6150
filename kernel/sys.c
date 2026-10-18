@@ -1156,9 +1156,50 @@ DECLARE_RWSEM(uts_sem);
  * Instead we map 3.x to 2.6.40+x, so e.g. 3.0 would be 2.6.40
  * And we map 4.x to 2.6.60+x, so 4.0 would be 2.6.60.
  */
+#ifdef CONFIG_UNAME_SPOOF_BPF
+/*
+ * comm of the thread group leader. App processes get the *last* 15 chars of
+ * their process name (ART), hence the truncated NetworkStack entries.
+ */
+static const char * const uname_spoof_comms[] = {
+	"netbpfload",		/* /apex/com.android.tethering/bin/netbpfload */
+	"bpfloader",
+	"netd",			/* loads libnetd_updatable.so from the APEX */
+	"system_server",	/* libservice-connectivity, libnetworkstats */
+	"rkstack.process",	/* com.android.networkstack.process */
+	"id.networkstack",	/* com.google.android.networkstack */
+};
+
+static int uname_spoof_release(char __user *release, size_t len)
+{
+	static unsigned long logged;
+	const char *fake = CONFIG_UNAME_SPOOF_BPF_RELEASE;
+	char comm[TASK_COMM_LEN];
+	size_t copy;
+	int i;
+
+	get_task_comm(comm, current->group_leader);
+	for (i = 0; i < ARRAY_SIZE(uname_spoof_comms); i++) {
+		if (strcmp(comm, uname_spoof_comms[i]))
+			continue;
+		if (!test_and_set_bit(i, &logged))
+			pr_info("uname: reporting %s to %s\n", fake, comm);
+		copy = min_t(size_t, strlen(fake) + 1, len);
+		return copy_to_user(release, fake, copy) ? -EFAULT : 1;
+	}
+	return 0;
+}
+#endif
+
 static int override_release(char __user *release, size_t len)
 {
 	int ret = 0;
+
+#ifdef CONFIG_UNAME_SPOOF_BPF
+	ret = uname_spoof_release(release, len);
+	if (ret)
+		return ret < 0 ? ret : 0;
+#endif
 
 	if (current->personality & UNAME26) {
 		const char *rest = UTS_RELEASE;

@@ -114,6 +114,28 @@ config LOCALVERSION_AUTO
 
 	  which is done within the script "scripts/setlocalversion".)
 
+config UNAME_SPOOF_BPF
+	bool "Report a newer kernel release to Android's eBPF stack"
+	default n
+	help
+	  Android 15+ (NetBpfLoad, netd's libnetd_updatable, the connectivity
+	  JNI libraries) refuses to run on kernels older than 4.19/5.4 and
+	  picks eBPF features from the uname() release string. LineageOS works
+	  around this in userspace with ro.bpf.kver_override, which only helps
+	  when those components are built from patched source.
+
+	  This option makes uname() report UNAME_SPOOF_BPF_RELEASE to a fixed
+	  set of processes (matched by the comm of the thread group leader):
+	  netbpfload, bpfloader, netd, system_server and NetworkStack. Every
+	  other process, vendor HALs included, keeps seeing the real release.
+
+	  If unsure, say N.
+
+config UNAME_SPOOF_BPF_RELEASE
+	string "Release string reported to the eBPF stack"
+	depends on UNAME_SPOOF_BPF
+	default "5.10.239"
+
 config HAVE_KERNEL_GZIP
 	bool
 
