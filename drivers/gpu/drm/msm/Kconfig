@@ -83,6 +83,22 @@ config DRM_MSM_DSI_FOD_TOUCH_HBM
 	  FOD light. It can still be toggled at runtime through the
 	  fod_touch_hbm attribute of the DSI display device.
 
+	  It also exposes the FOD HBM state as
+	  /sys/class/lcd/panel/actual_mask_brightness (unless the LCD class
+	  is enabled), which Samsung's fingerprint UI waits on before
+	  drawing its light source.
+
+config DRM_MSM_DSI_FOD_TOUCH_UI_DELAY_MS
+	int "Delay before reporting the FOD UI as ready (ms)"
+	depends on DRM_MSM_DSI_FOD_TOUCH_HBM
+	range 0 1000
+	default 0
+	help
+	  Time between turning on the touch-driven FOD HBM and setting
+	  fod_ui, which tells the fingerprint HAL to start capturing. Lets a
+	  light source drawn by userspace show up first. Can be changed at
+	  runtime through the fod_ui_delay_ms attribute of the DSI display.
+
 config DSI_PARSER
 	bool "Enable DSI panel configuration parser"
 	depends on DYNAMIC_DEBUG

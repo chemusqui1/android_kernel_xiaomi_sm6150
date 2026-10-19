@@ -5273,11 +5273,61 @@ error:
  */
 static struct {
 	struct work_struct work;
+	struct delayed_work ui_work;
 	atomic_t pressed;
 	bool enabled;
 	bool applied;
 	bool registered;
+	unsigned int ui_delay_ms;
+	struct device *mask_dev;
 } fod_touch;
+
+/*
+ * Samsung's fingerprint UI (One UI) only draws its light source once the
+ * panel reports the mask HBM through /sys/class/lcd/panel/actual_mask_brightness
+ * (it watches the node with inotify). Expose the touch-driven FOD HBM state
+ * there, so the light comes up when the HBM does. Its system_server also
+ * polls the node to forward the FOD press to that UI.
+ */
+static ssize_t actual_mask_brightness_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", READ_ONCE(fod_touch.applied));
+}
+static DEVICE_ATTR_RO(actual_mask_brightness);
+
+static void dsi_display_fod_mask_init(void)
+{
+#if IS_ENABLED(CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM) && !IS_ENABLED(CONFIG_LCD_CLASS_DEVICE)
+	static struct class *lcd_class;
+	struct device *dev;
+
+	lcd_class = class_create(THIS_MODULE, "lcd");
+	if (IS_ERR(lcd_class)) {
+		pr_err("fod_touch: no lcd class (%ld)\n", PTR_ERR(lcd_class));
+		return;
+	}
+
+	dev = device_create(lcd_class, NULL, 0, NULL, "panel");
+	if (IS_ERR(dev)) {
+		pr_err("fod_touch: no lcd/panel device (%ld)\n", PTR_ERR(dev));
+		return;
+	}
+
+	if (device_create_file(dev, &dev_attr_actual_mask_brightness)) {
+		pr_err("fod_touch: no actual_mask_brightness\n");
+		return;
+	}
+
+	fod_touch.mask_dev = dev;
+#endif
+}
+
+static void dsi_display_fod_ui_work(struct work_struct *work)
+{
+	if (primary_display && READ_ONCE(fod_touch.applied))
+		dsi_display_set_fod_ui(primary_display, true);
+}
 
 static void dsi_display_fod_touch_work(struct work_struct *work)
 {
@@ -5311,7 +5361,21 @@ static void dsi_display_fod_touch_work(struct work_struct *work)
 
 	pr_info("fod_touch: hbm %s, rc=%d\n", status ? "on" : "off", rc);
 
-	dsi_display_set_fod_ui(display, status);
+	if (fod_touch.mask_dev)
+		sysfs_notify(&fod_touch.mask_dev->kobj, NULL,
+			     "actual_mask_brightness");
+
+	/*
+	 * fod_ui tells the fingerprint HAL that the UI is ready to capture.
+	 * Give a userspace-drawn light source time to show up first.
+	 */
+	if (status && fod_touch.ui_delay_ms) {
+		schedule_delayed_work(&fod_touch.ui_work,
+				msecs_to_jiffies(fod_touch.ui_delay_ms));
+	} else {
+		cancel_delayed_work_sync(&fod_touch.ui_work);
+		dsi_display_set_fod_ui(display, status);
+	}
 }
 
 static void dsi_display_fod_input_event(struct input_handle *handle,
@@ -5388,7 +5452,12 @@ static void dsi_display_fod_touch_init(void)
 		return;
 
 	INIT_WORK(&fod_touch.work, dsi_display_fod_touch_work);
+	INIT_DELAYED_WORK(&fod_touch.ui_work, dsi_display_fod_ui_work);
 	fod_touch.enabled = IS_ENABLED(CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM);
+#ifdef CONFIG_DRM_MSM_DSI_FOD_TOUCH_UI_DELAY_MS
+	fod_touch.ui_delay_ms = CONFIG_DRM_MSM_DSI_FOD_TOUCH_UI_DELAY_MS;
+#endif
+	dsi_display_fod_mask_init();
 	if (input_register_handler(&dsi_display_fod_input_handler))
 		pr_err("failed to register FOD touch input handler\n");
 	else
@@ -5425,6 +5494,32 @@ static DEVICE_ATTR(fod_touch_hbm, 0644,
 			sysfs_fod_touch_hbm_read,
 			sysfs_fod_touch_hbm_write);
 
+static ssize_t sysfs_fod_ui_delay_ms_read(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", READ_ONCE(fod_touch.ui_delay_ms));
+}
+
+static ssize_t sysfs_fod_ui_delay_ms_write(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int ms;
+	int rc;
+
+	rc = kstrtouint(buf, 10, &ms);
+	if (rc)
+		return rc;
+	if (ms > 1000)
+		return -EINVAL;
+
+	WRITE_ONCE(fod_touch.ui_delay_ms, ms);
+	return count;
+}
+
+static DEVICE_ATTR(fod_ui_delay_ms, 0644,
+			sysfs_fod_ui_delay_ms_read,
+			sysfs_fod_ui_delay_ms_write);
+
 static DEVICE_ATTR(doze_status, 0644,
 			sysfs_doze_status_read,
 			sysfs_doze_status_write);
@@ -5447,6 +5542,7 @@ static struct attribute *display_fs_attrs[] = {
 	&dev_attr_fod_ui.attr,
 	&dev_attr_hbm.attr,
 	&dev_attr_fod_touch_hbm.attr,
+	&dev_attr_fod_ui_delay_ms.attr,
 	NULL,
 };
 static struct attribute_group display_fs_attrs_group = {
