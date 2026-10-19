@@ -5296,6 +5296,24 @@ static ssize_t actual_mask_brightness_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(actual_mask_brightness);
 
+/*
+ * Alpha (0-255) of the FOD dim layer for the current backlight, from the
+ * panel's qcom,disp-fod-dim-lut. Lets a userspace-drawn mask match the
+ * dimming the stock FOD path applies with its dim layer.
+ */
+static ssize_t fod_dim_alpha_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display = primary_display;
+
+	if (!display || !display->panel)
+		return -ENODEV;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 dsi_panel_get_fod_dim_alpha(display->panel));
+}
+static DEVICE_ATTR_RO(fod_dim_alpha);
+
 static void dsi_display_fod_mask_init(void)
 {
 #if IS_ENABLED(CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM) && !IS_ENABLED(CONFIG_LCD_CLASS_DEVICE)
@@ -5318,6 +5336,9 @@ static void dsi_display_fod_mask_init(void)
 		pr_err("fod_touch: no actual_mask_brightness\n");
 		return;
 	}
+
+	if (device_create_file(dev, &dev_attr_fod_dim_alpha))
+		pr_err("fod_touch: no fod_dim_alpha\n");
 
 	fod_touch.mask_dev = dev;
 #endif
