@@ -4288,6 +4288,10 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	rc = dsi_panel_set_doze_status(panel, false);
 	if (rc)
 		pr_err("unable to set doze off\n");
+
+	/* Restore the brightness cached while in doze (see dsi_display_set_backlight) */
+	if (panel->bl_config.bl_level && dsi_panel_set_backlight(panel, panel->bl_config.bl_level))
+		pr_err("unable to restore backlight after doze\n");
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;

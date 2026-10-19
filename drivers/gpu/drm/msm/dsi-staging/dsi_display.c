@@ -210,6 +210,17 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 
 	panel->bl_config.bl_level = bl_lvl;
 
+	/*
+	 * While the panel is in doze (LP1/LP2) its brightness is set by the
+	 * doze HBM/LBM command sets. Some userspaces (e.g. Samsung's) push the
+	 * new normal brightness before switching the display back to ON; writing
+	 * it to the panel while it is still in LP mode gets lost and the panel
+	 * stays black after NOLP. Only cache it here; dsi_panel_set_nolp()
+	 * applies it once the panel is out of doze.
+	 */
+	if (panel->doze_enabled)
+		goto error;
+
 	/* scale backlight */
 	bl_scale = panel->bl_config.bl_scale;
 	bl_temp = bl_lvl * bl_scale / MAX_BL_SCALE_LEVEL;
