@@ -5280,6 +5280,14 @@ static struct {
 	bool registered;
 	unsigned int ui_delay_ms;
 	struct device *mask_dev;
+	/*
+	 * Userspace sync: once fod_hbm is written, a press is only reported
+	 * through fod_pressed and the HBM waits for userspace to set fod_hbm,
+	 * so it can get its mask on screen first.
+	 */
+	bool user_ctrl;
+	bool user_hbm;
+	bool pressed_reported;
 } fod_touch;
 
 /*
@@ -5314,6 +5322,39 @@ static ssize_t fod_dim_alpha_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(fod_dim_alpha);
 
+static ssize_t fod_pressed_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 READ_ONCE(fod_touch.pressed_reported));
+}
+static DEVICE_ATTR_RO(fod_pressed);
+
+static ssize_t fod_hbm_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", READ_ONCE(fod_touch.user_hbm));
+}
+
+static ssize_t fod_hbm_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	bool on;
+	int rc;
+
+	rc = kstrtobool(buf, &on);
+	if (rc)
+		return rc;
+
+	WRITE_ONCE(fod_touch.user_ctrl, true);
+	/* A late "on" for a press that is already gone is ignored. */
+	WRITE_ONCE(fod_touch.user_hbm, on && READ_ONCE(fod_touch.pressed_reported));
+	queue_work(system_highpri_wq, &fod_touch.work);
+
+	return count;
+}
+static DEVICE_ATTR_RW(fod_hbm);
+
 static void dsi_display_fod_mask_init(void)
 {
 #if IS_ENABLED(CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM) && !IS_ENABLED(CONFIG_LCD_CLASS_DEVICE)
@@ -5339,6 +5380,10 @@ static void dsi_display_fod_mask_init(void)
 
 	if (device_create_file(dev, &dev_attr_fod_dim_alpha))
 		pr_err("fod_touch: no fod_dim_alpha\n");
+	if (device_create_file(dev, &dev_attr_fod_pressed))
+		pr_err("fod_touch: no fod_pressed\n");
+	if (device_create_file(dev, &dev_attr_fod_hbm))
+		pr_err("fod_touch: no fod_hbm\n");
 
 	fod_touch.mask_dev = dev;
 #endif
@@ -5354,14 +5399,24 @@ static void dsi_display_fod_touch_work(struct work_struct *work)
 {
 	struct dsi_display *display = primary_display;
 	struct dsi_panel *panel;
-	bool status;
+	bool pressed, status;
 	int rc;
 
 	if (!display || !display->panel)
 		return;
 
 	panel = display->panel;
-	status = READ_ONCE(fod_touch.enabled) && atomic_read(&fod_touch.pressed);
+	pressed = READ_ONCE(fod_touch.enabled) && atomic_read(&fod_touch.pressed);
+	if (pressed != fod_touch.pressed_reported) {
+		/* every new press or release needs a fresh go from userspace */
+		WRITE_ONCE(fod_touch.user_hbm, false);
+		WRITE_ONCE(fod_touch.pressed_reported, pressed);
+		if (fod_touch.mask_dev)
+			sysfs_notify(&fod_touch.mask_dev->kobj, NULL, "fod_pressed");
+	}
+
+	status = pressed &&
+		 (!READ_ONCE(fod_touch.user_ctrl) || READ_ONCE(fod_touch.user_hbm));
 	if (status == fod_touch.applied)
 		return;
 	fod_touch.applied = status;
