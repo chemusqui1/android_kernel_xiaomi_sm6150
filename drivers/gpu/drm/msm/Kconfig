@@ -99,6 +99,18 @@ config DRM_MSM_DSI_FOD_TOUCH_UI_DELAY_MS
 	  light source drawn by userspace show up first. Can be changed at
 	  runtime through the fod_ui_delay_ms attribute of the DSI display.
 
+config DRM_MSM_DSI_FOD_SENSOR_POSITION
+	string "Samsung-style in-display fingerprint sensor position"
+	depends on DRM_MSM_DSI_FOD_TOUCH_HBM
+	default ""
+	help
+	  Comma-separated sensor geometry in millimetres, exposed read-only
+	  as /sys/class/fingerprint/fingerprint/position the way Samsung
+	  kernels do: bottom margin, horizontal offset, sensor width, sensor
+	  height, active area width and height, image width and height,
+	  and so on. Samsung's lock screen reads it to keep the PIN pad
+	  clear of the fingerprint icon. Leave empty to not create it.
+
 config DSI_PARSER
 	bool "Enable DSI panel configuration parser"
 	depends on DYNAMIC_DEBUG

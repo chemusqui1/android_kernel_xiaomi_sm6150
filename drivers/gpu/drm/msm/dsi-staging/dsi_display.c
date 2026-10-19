@@ -5355,6 +5355,43 @@ static ssize_t fod_hbm_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(fod_hbm);
 
+#ifdef CONFIG_DRM_MSM_DSI_FOD_SENSOR_POSITION
+static ssize_t position_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%s\n",
+			 CONFIG_DRM_MSM_DSI_FOD_SENSOR_POSITION);
+}
+static DEVICE_ATTR_RO(position);
+
+static void dsi_display_fod_position_init(void)
+{
+	static struct class *fp_class;
+	struct device *dev;
+
+	if (!CONFIG_DRM_MSM_DSI_FOD_SENSOR_POSITION[0])
+		return;
+
+	fp_class = class_create(THIS_MODULE, "fingerprint");
+	if (IS_ERR(fp_class)) {
+		pr_err("fod_touch: no fingerprint class (%ld)\n",
+		       PTR_ERR(fp_class));
+		return;
+	}
+
+	dev = device_create(fp_class, NULL, 0, NULL, "fingerprint");
+	if (IS_ERR(dev)) {
+		pr_err("fod_touch: no fingerprint device (%ld)\n", PTR_ERR(dev));
+		return;
+	}
+
+	if (device_create_file(dev, &dev_attr_position))
+		pr_err("fod_touch: no fingerprint position\n");
+}
+#else
+static inline void dsi_display_fod_position_init(void) { }
+#endif
+
 static void dsi_display_fod_mask_init(void)
 {
 #if IS_ENABLED(CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM) && !IS_ENABLED(CONFIG_LCD_CLASS_DEVICE)
@@ -5387,6 +5424,7 @@ static void dsi_display_fod_mask_init(void)
 
 	fod_touch.mask_dev = dev;
 #endif
+	dsi_display_fod_position_init();
 }
 
 static void dsi_display_fod_ui_work(struct work_struct *work)
