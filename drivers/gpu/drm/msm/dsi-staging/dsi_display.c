@@ -18,6 +18,8 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/err.h>
+#include <linux/input.h>
+#include <linux/workqueue.h>
 
 #include <linux/msm_drm_notify.h>
 
@@ -5255,6 +5257,174 @@ error:
 	return ret == 0 ? count : ret;
 }
 
+/*
+ * FOD HBM driven by the touchscreen.
+ *
+ * The stock path turns on the FOD HBM (and fod_ui, which the fingerprint HAL
+ * waits on before capturing) from the atomic commit when SurfaceFlinger tags
+ * the pressed layer with FOD_PRESSED_LAYER_ZORDER. Userspaces that draw their
+ * own FOD light (e.g. Samsung's One UI) never set that flag, so the panel
+ * never enters FOD HBM and the HAL times out waiting for the UI.
+ *
+ * When fod_touch_hbm is set, follow BTN_INFO from the touchscreen instead:
+ * press turns the FOD HBM and fod_ui on, release turns them off. Its initial
+ * value comes from CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM (off by default, so the
+ * stock behaviour is unchanged).
+ */
+static struct {
+	struct work_struct work;
+	atomic_t pressed;
+	bool enabled;
+	bool applied;
+	bool registered;
+} fod_touch;
+
+static void dsi_display_fod_touch_work(struct work_struct *work)
+{
+	struct dsi_display *display = primary_display;
+	struct dsi_panel *panel;
+	bool status;
+	int rc;
+
+	if (!display || !display->panel)
+		return;
+
+	panel = display->panel;
+	status = READ_ONCE(fod_touch.enabled) && atomic_read(&fod_touch.pressed);
+	if (status == fod_touch.applied)
+		return;
+	fod_touch.applied = status;
+
+	mutex_lock(&panel->panel_lock);
+	if (!dsi_panel_initialized(panel)) {
+		rc = -ENODEV;
+	} else {
+		rc = dsi_display_clk_ctrl(display->dsi_clk_handle,
+					  DSI_CORE_CLK, DSI_CLK_ON);
+		if (!rc) {
+			rc = dsi_panel_set_fod_hbm(panel, status);
+			dsi_display_clk_ctrl(display->dsi_clk_handle,
+					     DSI_CORE_CLK, DSI_CLK_OFF);
+		}
+	}
+	mutex_unlock(&panel->panel_lock);
+
+	pr_info("fod_touch: hbm %s, rc=%d\n", status ? "on" : "off", rc);
+
+	dsi_display_set_fod_ui(display, status);
+}
+
+static void dsi_display_fod_input_event(struct input_handle *handle,
+		unsigned int type, unsigned int code, int value)
+{
+	if (type != EV_KEY || code != BTN_INFO)
+		return;
+
+	atomic_set(&fod_touch.pressed, !!value);
+	if (READ_ONCE(fod_touch.enabled) || fod_touch.applied)
+		queue_work(system_highpri_wq, &fod_touch.work);
+}
+
+static int dsi_display_fod_input_connect(struct input_handler *handler,
+		struct input_dev *dev, const struct input_device_id *id)
+{
+	struct input_handle *handle;
+	int rc;
+
+	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
+	if (!handle)
+		return -ENOMEM;
+
+	handle->dev = dev;
+	handle->handler = handler;
+	handle->name = "dsi_fod_touch";
+
+	rc = input_register_handle(handle);
+	if (rc)
+		goto err_free;
+
+	rc = input_open_device(handle);
+	if (rc)
+		goto err_unregister;
+
+	pr_info("fod_touch: watching %s\n", dev_name(&dev->dev));
+	return 0;
+
+err_unregister:
+	input_unregister_handle(handle);
+err_free:
+	kfree(handle);
+	return rc;
+}
+
+static void dsi_display_fod_input_disconnect(struct input_handle *handle)
+{
+	input_close_device(handle);
+	input_unregister_handle(handle);
+	kfree(handle);
+}
+
+static const struct input_device_id dsi_display_fod_input_ids[] = {
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
+			 INPUT_DEVICE_ID_MATCH_KEYBIT,
+		.evbit = { BIT_MASK(EV_KEY) },
+		.keybit = { [BIT_WORD(BTN_INFO)] = BIT_MASK(BTN_INFO) },
+	},
+	{ },
+};
+
+static struct input_handler dsi_display_fod_input_handler = {
+	.event		= dsi_display_fod_input_event,
+	.connect	= dsi_display_fod_input_connect,
+	.disconnect	= dsi_display_fod_input_disconnect,
+	.name		= "dsi_fod_touch",
+	.id_table	= dsi_display_fod_input_ids,
+};
+
+static void dsi_display_fod_touch_init(void)
+{
+	if (fod_touch.registered)
+		return;
+
+	INIT_WORK(&fod_touch.work, dsi_display_fod_touch_work);
+	fod_touch.enabled = IS_ENABLED(CONFIG_DRM_MSM_DSI_FOD_TOUCH_HBM);
+	if (input_register_handler(&dsi_display_fod_input_handler))
+		pr_err("failed to register FOD touch input handler\n");
+	else
+		fod_touch.registered = true;
+}
+
+static ssize_t sysfs_fod_touch_hbm_read(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", READ_ONCE(fod_touch.enabled));
+}
+
+static ssize_t sysfs_fod_touch_hbm_write(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	bool enable;
+	int rc;
+
+	rc = kstrtobool(buf, &enable);
+	if (rc)
+		return rc;
+
+	if (!fod_touch.registered)
+		return -ENODEV;
+
+	WRITE_ONCE(fod_touch.enabled, enable);
+	pr_info("fod_touch: %s\n", enable ? "enabled" : "disabled");
+	queue_work(system_highpri_wq, &fod_touch.work);
+
+	return count;
+}
+
+static DEVICE_ATTR(fod_touch_hbm, 0644,
+			sysfs_fod_touch_hbm_read,
+			sysfs_fod_touch_hbm_write);
+
 static DEVICE_ATTR(doze_status, 0644,
 			sysfs_doze_status_read,
 			sysfs_doze_status_write);
@@ -5276,6 +5446,7 @@ static struct attribute *display_fs_attrs[] = {
 	&dev_attr_doze_mode.attr,
 	&dev_attr_fod_ui.attr,
 	&dev_attr_hbm.attr,
+	&dev_attr_fod_touch_hbm.attr,
 	NULL,
 };
 static struct attribute_group display_fs_attrs_group = {
@@ -5286,6 +5457,8 @@ static int dsi_display_sysfs_init(struct dsi_display *display)
 {
 	int rc = 0;
 	struct device *dev = &display->pdev->dev;
+
+	dsi_display_fod_touch_init();
 
 	rc = sysfs_create_group(&dev->kobj, &display_fs_attrs_group);
 	if (rc)

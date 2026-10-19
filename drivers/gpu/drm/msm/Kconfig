@@ -71,6 +71,18 @@ config DRM_MSM_DSI_STAGING
 	  Interface and DSI stands for Display Serial Interface which powers
 	  the primary display of your mobile device.
 
+config DRM_MSM_DSI_FOD_TOUCH_HBM
+	bool "Drive the FOD HBM from the touchscreen by default"
+	depends on DRM_MSM_DSI_STAGING && INPUT
+	default n
+	help
+	  Turn the panel FOD HBM and fod_ui on while the touchscreen reports
+	  BTN_INFO (finger on the in-display fingerprint sensor), instead of
+	  waiting for SurfaceFlinger to mark the pressed layer with
+	  FOD_PRESSED_LAYER_ZORDER. Needed by userspaces that draw their own
+	  FOD light. It can still be toggled at runtime through the
+	  fod_touch_hbm attribute of the DSI display device.
+
 config DSI_PARSER
 	bool "Enable DSI panel configuration parser"
 	depends on DYNAMIC_DEBUG
