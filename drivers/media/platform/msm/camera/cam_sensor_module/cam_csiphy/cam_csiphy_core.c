@@ -909,9 +909,25 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 
 		offset = cam_csiphy_get_instance_offset(csiphy_dev,
 			release.dev_handle);
+
+		/*
+		 * With a MIPI switch, two sensors acquire the PHY with the same
+		 * combo_mode (0), so the second handle overwrites the first one
+		 * in bridge_intf.device_hdl[] and the first handle can no
+		 * longer be found here. START_DEV and STOP_DEV already use
+		 * offset 0 in that case; do the same, and never bail out of a
+		 * release: skipping it leaks acquire_count and the PHY then
+		 * refuses every later acquire ("do not allow more than 2").
+		 * Xiaomi's kernels release without looking the handle up.
+		 */
+		if (csiphy_dev->is_acquired_dev_mipi_switch == 1)
+			offset = 0;
+
 		if (offset < 0 || offset >= CSIPHY_MAX_INSTANCES) {
-			CAM_ERR(CAM_CSIPHY, "Invalid offset");
-			goto release_mutex;
+			CAM_WARN(CAM_CSIPHY,
+				"Unknown handle %d, releasing it anyway",
+				release.dev_handle);
+			offset = 0;
 		}
 
 		if (csiphy_dev->csiphy_info.secure_mode[offset])
