@@ -412,12 +412,21 @@ int32_t cam_packet_validate_plane_size(
 		slice_height = io_cfg->planes[plane_index].slice_height;
 	}
 
+	/*
+	 * Xiaomi's camera userspace leaves stride and slice height at 0 for
+	 * some RDI outputs (MIUI's ZSLPreviewRawYUV pipeline, used by its
+	 * clone mode, sends one on IFE RDI_1). The KMD cannot work out a
+	 * plane size from that, so there is nothing to check here: keep the
+	 * behaviour from before this validation was added and let
+	 * cam_mem_get_io_buf()'s mapping stand on its own.
+	 */
 	if (!(plane_stride && slice_height)) {
-		CAM_ERR(CAM_ISP,
-			"Invalid values from UMD stride %d, slice height %d",
+		CAM_DBG(CAM_ISP,
+			"No stride/slice height from UMD (%d, %d), format %d: size not checked",
 			plane_stride,
-			slice_height);
-		return -EINVAL;
+			slice_height,
+			format);
+		return 0;
 	}
 
 	switch (format) {
